@@ -32,35 +32,170 @@
 
 #!csharp
 
-//
-// Вычисление определенного интеграла
-//
+using System;
+using System.Threading;
+using System.Diagnostics;
+
+
 class DefiniteIntegral
 {
-    //
-    // a, b - границы отрезка, на котором происходит вычисление опредленного интеграла
-    // function - функция, для которой вычисляется определнный интеграл
-    // step - размер одного шага разбиения
-    // threadsNumber - число потоков, которые используются для вычислений
-    //
-    public static double Solve(double a, double b, Func<double, double> function, double step, int threadsnumber)
+    public static double[] Solve(double a, double b, Func<double, double> function, double step, int threadsNumber)
     {
-        // отсюда надо начинать реализацию задачи
-        return 0.0;
+        double result = 0.0;
+        double s_length = (b - a) / threadsNumber;
+        Barrier barrier = new Barrier(threadsNumber + 1);
+        Stopwatch time = new Stopwatch();
+
+        time.Start();
+        for (int i = 0; i < threadsNumber; i++)
+        {
+            double start = a + i * s_length, end = start + s_length;
+
+            Thread thread = new Thread(() =>
+            {   
+                
+                double local_result = 0.0;
+
+                for (double x = start; x < end; x += step)
+                {
+                    double next_x = x + step;
+
+                    if (next_x > end) next_x = end;
+
+                    local_result += (function(x) + function(next_x)) * (next_x - x) / 2;
+
+                }
+
+                lock (barrier)
+                {
+                    double result_now, result_plus;
+
+                    do {result_now = result;
+                    result_plus = result_now + local_result;}
+                    while (Interlocked.CompareExchange(ref result, result_plus, result_now) != result_now);
+                    
+                }
+
+                barrier.SignalAndWait();
+            });
+
+            thread.Start();
+        }
+
+        barrier.SignalAndWait();
+
+        time.Stop();
+
+
+        return [time.ElapsedMilliseconds, result];
     }
 }
 
 #!csharp
 
 #r "nuget: xunit, 2.8.1"
+#r "nuget:ScottPlot, 5.0.35"
 
 using Xunit;
+using Microsoft.DotNet.Interactive.Formatting;
 
-var X = (double x) => x;
 var SIN = (double x) => Math.Sin(x);
 
-Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, X, 1e-4, 2), 1e-4);
+Formatter.Register(typeof(ScottPlot.Plot), (p, w) => 
+    w.Write(((ScottPlot.Plot)p).GetImageHtml(1000, 500)), HtmlFormatter.MimeType);
+int num_thread = 16;
+double[] spsk_time = new double[num_thread];
+double[] spsk_num_thread = new double[num_thread];
+double best_time = Double.MaxValue;
+int num_of_best_thread;
 
-Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, SIN, 1e-5, 8), 1e-4);
+for (int i = 0; i < num_thread; i++)
+{
+    double local_time = 0;
 
-Assert.Equal(10, DefiniteIntegral.Solve(0, 10, X, 1e-6, 8), 1e-5);
+    for (int j = 0; j < 10; j++)
+    {   
+        var spsk_result = DefiniteIntegral.Solve(-100, 100, SIN, 1e-5, i + 1);
+        Assert.Equal(0, spsk_result[1], 1e-4);
+        local_time += spsk_result[0];
+    }
+
+    spsk_time[i] = local_time/10;
+    spsk_num_thread[i] = i + 1;
+
+    if (Math.Min(local_time/10, best_time) != best_time)
+    {
+        best_time = Math.Min(local_time/10, best_time);
+        num_of_best_thread = i + 1;
+    }
+}
+
+
+ScottPlot.Plot plt = new();
+
+
+plt.Add.Scatter(spsk_time, spsk_num_thread);
+plt
+
+#!csharp
+
+Console.WriteLine($"Количество потоков, на которых достигается минимальное время: {num_of_best_thread}");
+Console.WriteLine($"Это время: {best_time} мс");
+
+#!csharp
+
+class DefiniteIntegralDefault
+{
+    public static double[] Solve(double a, double b, Func<double, double> function, double step)
+    {
+        double result = 0.0;
+        Stopwatch time = new Stopwatch();
+
+        time.Start();
+        for (double x = a; x < b; x += step)
+        {
+            double next_x = x + step;
+
+            if (next_x > b) next_x = b;
+
+            result += (function(x) + function(next_x)) * (next_x - x) / 2;
+
+        }
+        time.Stop();
+
+        return [time.ElapsedMilliseconds, result];
+    }
+
+}
+
+double time_default_mult = 0;
+
+for (int i = 0; i <= 10; i++)
+    {
+        var spsk_result_default = DefiniteIntegralDefault.Solve(-100, 100, SIN, 1e-5);
+        Assert.Equal(0, spsk_result_default[1], 1e-4);
+        time_default_mult += spsk_result_default[0];
+        
+    }
+
+
+double time_default = time_default_mult/10;
+Console.WriteLine($"Усреднённое время выполнения на однопоточном варианте: {time_default} мс");
+
+#!csharp
+
+Console.WriteLine($"Лучший результат, полученный на многопоточном варианте реализации: {best_time} мс");
+Console.WriteLine($"Результат, полученный на однопоточном варианте реализации: {time_default} мс");
+Console.WriteLine($"Процентная разница : {Math.Round(((time_default - best_time)/((time_default + best_time)/2)*100), 2, MidpointRounding.AwayFromZero)}%");
+
+#!markdown
+
+# Summary
+**Выбор шага:**
+Размер шага был выбран **1e-5**, так как при значении больше программа начинает работать нестабильно (всегда выдает разные результаты скорости расчета интеграла на различном количестве потоков, вследствие чего нельзя точно определить, какое количество потоков является оптимальным), а при выборе значений меньше программа требует на выполнение много времени (более 6 минут).
+
+**Оптимальное число потоков:**
+В результате выполнения программы мы выяснили, что оптимальное число потоков, т.е. число потоков, на котором достигается минимальное время выполнения функции Solve, является: **12**
+
+**Процентная разница:**
+Лучшее время выполнения многопоточного варианта: **117.6 мс**, время выполнени однопоточного: **894.9 мс**. Процентную разницу вычисляем по формуле (a - b) / ( (a + b) / 2 ) * 100 %: **153.54%**. Разница составляет более 15 процентов, из чего делаем вывод, что многопоточная реализация работает значительно быстрее, чем однопоточная.
