@@ -61,6 +61,54 @@ var queue1 = new BlockingCollection<Message>(2); //очередь первого
 var queue2 = new BlockingCollection<Message>(2); //очередь второго потока
 
 // Здесь писать решение
+queue1.Add(new Message());
+Barrier sync_barrier = new Barrier(2);
+AutoResetEvent event_producer = new AutoResetEvent(false);
+AutoResetEvent event_consumer = new AutoResetEvent(false);
+
+Thread producer_thread = new Thread(() =>
+{
+    for (int i = 0; i < 100; i++)
+    {
+        var message = queue1.Take();
+        message.Handle();
+        if (i % 2 == 0)
+        {
+            event_producer.Set(); // Сигнализируем потребителю
+        }
+        queue2.Add(message);
+        sync_barrier.SignalAndWait();
+        if (i % 2 == 0)
+        {
+            event_consumer.WaitOne(); // Ожидаем сигнала от потребителя
+        }
+    }
+});
+
+Thread consumer_thread = new Thread(() =>
+{
+    for (int i = 0; i < 100; i++)
+    {
+        if (i % 2 == 0)
+        {
+            event_producer.WaitOne(); // Ожидаем сигнала от производителя
+        }
+        var message = queue2.Take();
+        message.Handle();
+        if (i != 99) queue1.Add(message);
+        sync_barrier.SignalAndWait();
+        if (i % 2 == 0)
+        {
+            event_consumer.Set(); // Сигнализируем производителю
+        }
+    }
+});
+
+producer_thread.Start();
+consumer_thread.Start();
+
+producer_thread.Join();
+consumer_thread.Join();
 
 #!csharp
 
