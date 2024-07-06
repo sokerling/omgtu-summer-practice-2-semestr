@@ -37,10 +37,223 @@
 Для этого следует использовать условные события, которые позволят убедиться, что оба потока запустились и готовы читать и писать объекты и только потом запускать таймер.
 2. Для итогового вывода сравнивать усредненные значения.
 
-#!markdown
+#!csharp
 
-// здесь писать код
+#r "nuget:ScottPlot, 5.0.35"
+
+
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
+using Microsoft.DotNet.Interactive.Formatting;
+
+int iterations = 10;
+int items_count = 1000000;
+Formatter.Register(typeof(ScottPlot.Plot), (p, w) => 
+    w.Write(((ScottPlot.Plot)p).GetImageHtml(1000, 500)), HtmlFormatter.MimeType);
+        
+List<double> blocking_collection_times = new List<double>();
+List<double> concurrent_queue_times = new List<double>();
+List<double> regular_queue_times = new List<double>();
+
+for (int i = 0; i < iterations; i++)
+{
+    blocking_collection_times.Add(TestBlockingCollection(items_count));
+    concurrent_queue_times.Add(TestConcurrentQueue(items_count));
+    regular_queue_times.Add(TestRegularQueue(items_count));
+}
+
+static double TestBlockingCollection(int items_count)
+{
+    BlockingCollection<int> collection = new BlockingCollection<int>();
+    Stopwatch stopwatch = new Stopwatch();
+    ManualResetEventSlim reset_event = new ManualResetEventSlim();
+
+    Thread producer = new Thread(() =>
+    {
+        reset_event.Wait();
+        for (int i = 0; i < items_count; i++)
+        {
+            collection.Add(i);
+        }
+        collection.CompleteAdding();
+    });
+
+    Thread consumer = new Thread(() =>
+    {
+        reset_event.Wait();
+        foreach (var item in collection.GetConsumingEnumerable()) { }
+    });
+
+    producer.Start();
+    consumer.Start();
+    reset_event.Set();
+    stopwatch.Start();
+
+    producer.Join();
+    consumer.Join();
+    stopwatch.Stop();
+
+    return stopwatch.Elapsed.TotalMilliseconds;
+}
+
+static double TestConcurrentQueue(int items_count)
+{
+    ConcurrentQueue<int> queue = new ConcurrentQueue<int>();
+    Stopwatch stopwatch = new Stopwatch();
+    ManualResetEventSlim reset_event = new ManualResetEventSlim();
+
+    Thread producer = new Thread(() =>
+    {
+        reset_event.Wait();
+        for (int i = 0; i < items_count; i++)
+        {
+            queue.Enqueue(i);
+        }
+    });
+
+    Thread consumer = new Thread(() =>
+    {
+        reset_event.Wait();
+        int item;
+        for (int i = 0; i < items_count; i++)
+        {
+            while (!queue.TryDequeue(out item)) { }
+        }
+    });
+
+    producer.Start();
+    consumer.Start();
+    reset_event.Set();
+    stopwatch.Start();
+
+    producer.Join();
+    consumer.Join();
+    stopwatch.Stop();
+
+    return stopwatch.Elapsed.TotalMilliseconds;
+}
+
+static double TestRegularQueue(int items_count)
+{
+    Queue<int> queue = new Queue<int>();
+    Stopwatch stopwatch = new Stopwatch();
+
+    stopwatch.Start();
+    for (int i = 0; i < items_count; i++)
+    {
+        queue.Enqueue(i);
+    }
+
+    for (int i = 0; i < items_count; i++)
+    {
+        queue.Dequeue();
+    }
+    stopwatch.Stop();
+    double q_time = stopwatch.Elapsed.TotalMilliseconds;
+
+    return q_time;
+}
+
+static double GetAverage(List<double> times)
+{
+    double sum = 0;
+    foreach (var j in times)
+    {
+        sum += j;
+    }
+    return sum / times.Count;
+}
+
+
+Console.WriteLine($"Усреднённое время выполнения BlockingCollection: {Math.Round(GetAverage(blocking_collection_times), 2, MidpointRounding.AwayFromZero)} мс");
+
+
+
+double[] x_axis = new double[10];
+
+
+for(int i = 0; i < iterations; i++)
+{
+    x_axis[i] = blocking_collection_times[i];
+}
+
+double[] y_axis = new double[iterations];
+
+
+for(int i = 0; i < iterations; i++)
+{
+    y_axis[i] = i + 1;
+}
+
+
+ScottPlot.Plot blocking_coll = new();
+
+blocking_coll.Add.Scatter(x_axis, y_axis);
+blocking_coll
+
+#!csharp
+
+Console.WriteLine($"Усреднённое время выполнения ConcurrentQueue: {Math.Round(GetAverage(concurrent_queue_times), 2, MidpointRounding.AwayFromZero)} мс");
+
+double[] x_axis = new double[10];
+
+for(int i = 0; i < iterations; i++)
+{
+    x_axis[i] = concurrent_queue_times[i];
+}
+
+double[] y_axis = new double[iterations];
+
+for(int i = 0; i < iterations; i++)
+{
+    y_axis[i] = i + 1;
+}
+
+ScottPlot.Plot conc_que = new();
+
+conc_que.Add.Scatter(x_axis, y_axis);
+conc_que
+
+#!csharp
+
+Console.WriteLine($"Усреднённое время выполнения обычной непотокобезопасной очереди: {Math.Round(GetAverage(regular_queue_times), 2, MidpointRounding.AwayFromZero)} мс");
+
+double[] x_axis = new double[10];
+
+for(int i = 0; i < iterations; i++)
+{
+    x_axis[i] = regular_queue_times[i];
+}
+
+double[] y_axis = new double[iterations];
+
+for(int i = 0; i < iterations; i++)
+{
+    y_axis[i] = i + 1;
+}
+
+ScottPlot.Plot reg_que = new();
+
+reg_que.Add.Scatter(x_axis, y_axis);
+reg_que
 
 #!markdown
 
 ## Вывод
+Самая эффективная из потоко-безопасных коллекций - это **ConcurrentQueue**
+
+#!markdown
+
+#!csharp
+
+if (GetAverage(concurrent_queue_times) < GetAverage(regular_queue_times))
+{
+    Console.WriteLine($"ConcurrentQueue оказалась быстрее обычной очереди на: {Math.Round(((GetAverage(regular_queue_times) - GetAverage(concurrent_queue_times))/((GetAverage(regular_queue_times) + GetAverage(concurrent_queue_times))/2)*100), 2, MidpointRounding.AwayFromZero)}%");
+}
+else
+{
+    Console.WriteLine($"Обычная очередь оказалась быстрее на: {Math.Round(((GetAverage(concurrent_queue_times) - GetAverage(regular_queue_times))/((GetAverage(regular_queue_times) + GetAverage(concurrent_queue_times))/2)*100), 2, MidpointRounding.AwayFromZero)}%");
+}
