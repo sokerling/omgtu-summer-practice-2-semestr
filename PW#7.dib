@@ -17,9 +17,229 @@
 
 #!csharp
 
+using System;
+using System.Collections.Concurrent;
+using System.Threading;
+
+
 public interface ICommand
 {
     void Execute();
+}
+
+
+public class ServerThread
+{
+    private ConcurrentQueue<ICommand> command_queue;
+    private Thread thread;
+    private bool running;
+    private bool soft_stopping;
+
+    public ServerThread()
+    {
+        command_queue = new ConcurrentQueue<ICommand>();
+        running = true;
+        soft_stopping = false;
+        thread = new Thread(Run);
+    }
+
+    public void Start()
+    {
+        thread.Start();
+    }
+
+    public void EnqueueCommand(ICommand command)
+    {
+        command_queue.Enqueue(command);
+    }
+
+    private void Run()
+    {
+        while (running || !command_queue.IsEmpty)
+        {
+            if (command_queue.TryDequeue(out ICommand command))
+            {
+                try
+                {
+                    command.Execute();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Исключение: {ex.Message}");
+                }
+            }
+
+            if (soft_stopping && command_queue.IsEmpty)
+            {
+                running = false;
+            }
+        }
+    }
+
+    public void HardStop()
+    {
+        if (Thread.CurrentThread != thread)
+        {
+            throw new InvalidOperationException("Жесткая остановка может быть выполнена только в том потоке, для остановки которого она предназначена");
+        }
+
+        running = false;
+        while (!command_queue.IsEmpty)
+        {
+            command_queue.TryDequeue(out _);
+        }
+    }
+
+    public void SoftStop()
+    {
+        if (Thread.CurrentThread != thread)
+        {
+            throw new InvalidOperationException("Мягкая остановка может быть выполнена только в том потоке, для остановки которого она предназначена.");
+        }
+
+        soft_stopping = true;
+    }
+
+    public bool IsAlive => thread.IsAlive;
+}
+
+#!csharp
+
+public class HardStopCommand : ICommand
+{
+    private readonly ServerThread server_thread;
+
+    public HardStopCommand(ServerThread server_thread)
+    {
+        this.server_thread = server_thread;
+    }
+
+    public void Execute()
+    {
+        server_thread.HardStop();
+    }
+}
+
+public class SoftStopCommand : ICommand
+{
+    private readonly ServerThread server_thread;
+
+    public SoftStopCommand(ServerThread server_thread)
+    {
+        this.server_thread = server_thread;
+    }
+
+    public void Execute()
+    {
+        server_thread.SoftStop();
+    }
+}
+
+#!csharp
+
+public class ActionCommand : ICommand
+{
+    private readonly Action action;
+
+    public ActionCommand(Action action)
+    {
+        this.action = action;
+    }
+
+    public void Execute()
+    {
+        action();
+    }
+}
+
+#!csharp
+
+ServerThread server_thread = new ServerThread();
+server_thread.Start();
+
+for (int i = 1; i <= 5; i++)
+{       
+        int command_number = i;
+        if (i == 3) 
+        {
+        server_thread.EnqueueCommand(new ActionCommand(() => Console.WriteLine("Выполнен SoftStop")));
+        server_thread.EnqueueCommand(new SoftStopCommand(server_thread));
+        }
+        else server_thread.EnqueueCommand(new ActionCommand(() => Console.WriteLine($"Выполнена команда: {command_number}")));
+}
+
+Thread.Sleep(2000);
+
+if (server_thread.IsAlive)
+{
+        Console.WriteLine("SoftStop не остановил поток\n");
+}
+else
+{
+        Console.WriteLine("SoftStop остановил поток\n");
+}
+
+server_thread = new ServerThread();
+server_thread.Start();
+
+for (int i = 1; i <= 5; i++)
+{
+        int command_number = i;
+        if (i == 3) 
+        {
+        server_thread.EnqueueCommand(new ActionCommand(() => Console.WriteLine("Выполнен HardStop")));
+        server_thread.EnqueueCommand(new HardStopCommand(server_thread));
+        }
+        else server_thread.EnqueueCommand(new ActionCommand(() => Console.WriteLine($"Выполнена команда: {command_number}")));
+}
+
+
+Thread.Sleep(2000);
+
+if (server_thread.IsAlive)
+{
+        Console.WriteLine("HardStop не остановил поток\n");
+}
+else
+{
+        Console.WriteLine("HardStop остановил поток\n");
+}
+
+ServerThread another_thread = new ServerThread();
+another_thread.Start();
+
+try
+{
+        new HardStopCommand(another_thread).Execute();
+}
+catch (Exception ex)
+{
+        Console.WriteLine($"Поймано ожидаемое исключение: {ex.Message}");
+}
+
+for (int i = 1; i <= 5; i++)
+{
+        int command_number = i;
+        if (i == 3)
+        {
+        another_thread.EnqueueCommand(new ActionCommand(() => Console.WriteLine($"Выполнена команда: {command_number} в другом потоке")));
+        another_thread.EnqueueCommand(new SoftStopCommand(another_thread));
+        }
+        else
+        {
+        another_thread.EnqueueCommand(new ActionCommand(() => Console.WriteLine($"Выполнена команда: {command_number} в другом потоке")));
+        }
+}
+
+Thread.Sleep(2000);
+
+if (another_thread.IsAlive)
+{
+        Console.WriteLine("SoftStop в другом потоке не остановил поток");
+}
+else
+{
+        Console.WriteLine("SoftStop в другом потоке остановил поток");
 }
 
 #!markdown
